@@ -1,5 +1,5 @@
 // sw.js
-const CACHE = 'vault-pwa-v25';
+const CACHE = 'vault-pwa-v26';
 const ASSETS = [
   './',
   './index.html?v=24',

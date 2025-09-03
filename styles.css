@@ -246,3 +246,8 @@ html.masked .wrap {
 }
 /* upewnij się, że nakładka pojawia się natychmiast */
 .privacy-mask { opacity: 1; transition: none; }
+/* === Historia haseł w karcie wpisu === */
+.pw-hist{ margin-top:8px; }
+.pw-hist summary{ cursor:pointer; color:var(--muted); }
+.pw-hist .row{ margin-top:6px; }
+.pw-hist input.hist{ flex:1; min-width:0; }

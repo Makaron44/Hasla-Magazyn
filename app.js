@@ -16,6 +16,8 @@ let settings = {
   autolockMin: 5,
   ageDays: 180,
   maskEnabled: true,
+  protectPwChange: true,   // potwierdzenie przed zmianą
+  historySize: 3,          // ile haseł trzymać w historii
   filters: { old: true, short: true, weak: true, dup: true }
 };
 let autolockMinutes = settings.autolockMin;
@@ -211,6 +213,7 @@ function checkSetup(){
   updateBioUI();
 }
 function showLock(isSetup){
+hideMask();
   document.body.classList.add('locked'); document.body.classList.remove('unlocked');
   lockView.style.display='block'; showTab('vault');
   confirmLabel.hidden = !isSetup;
@@ -226,7 +229,7 @@ function showMain(){
   lockView.style.display='none'; showTab('vault'); renderList(); searchEl.value='';
   bumpActivity(); hideMask();
 }
-function lockApp(){ masterKey=null; quickKey=null; showLock(false); showMask(); }
+function lockApp(){ masterKey=null; quickKey=null; showLock(false); }
 
 async function handleUnlock(){
   if (unlocking) return; unlocking = true;
@@ -370,6 +373,7 @@ function renderList(){
           <textarea data-id="${e.id}" data-field="notes">${escapeHtml(e.notes)}</textarea>
         </label>
       </div>
+${renderHistory(e)}
       <div class="row">
         <button class="ghost genFor" data-id="${e.id}">Wygeneruj hasło dla tego wpisu</button>
         <span style="margin-left:auto"></span>
@@ -383,11 +387,16 @@ function renderList(){
   listEl.querySelectorAll('input, textarea').forEach(el => {
     const field = el.getAttribute('data-field'); const id = el.getAttribute('data-id'); if (!field || !id) return;
     el.addEventListener('change', ev => {
-      const entry = vault.entries.find(x => x.id===id);
-      const patch = { [field]: ev.target.value };
-      if (field === 'password' && entry && entry.password !== ev.target.value){ patch.pwChangedAt = nowIso(); }
-      updateEntry(id, patch); renderList();
-    });
+  const entry = vault.entries.find(x => x.id===id);
+  if (field === 'password'){
+    if (entry && entry.password !== ev.target.value){
+      changePassword(id, ev.target.value);
+    }
+  } else {
+    updateEntry(id, { [field]: ev.target.value });
+    renderList();
+  }
+});
     if (field === 'password'){
       el.addEventListener('input', ev => { const m = measureStrength(ev.target.value, entryContext(id)); updateMeter(`bar-${id}`, `label-${id}`, m); });
       const m = measureStrength(el.value, entryContext(id)); updateMeter(`bar-${id}`, `label-${id}`, m);
@@ -403,11 +412,43 @@ function renderList(){
     const id = btn.getAttribute('data-id'); const input = listEl.querySelector(`input[data-id="${id}"][data-field="password"]`);
     try{ await navigator.clipboard.writeText(input.value||''); const ok=$(`#copied-${id}`); ok.hidden=false; setTimeout(()=> ok.hidden=true,1500); } catch{ alert('Nie udało się skopiować.'); }
   }));
-  listEl.querySelectorAll('button.genFor').forEach(btn => btn.addEventListener('click', () => {
-    const id = btn.getAttribute('data-id'); const pass = generatePassword(); updateEntry(id, { password: pass, pwChangedAt: nowIso() }); renderList();
-  }));
+  listEl.querySelectorAll('button.genFor').forEach(btn => {
+  btn.addEventListener('click', () => {
+    const id = btn.getAttribute('data-id');
+    const pass = generatePassword();
+    changePassword(id, pass);
+  });
+});
   listEl.querySelectorAll('button.del').forEach(btn => btn.addEventListener('click', () => deleteEntry(btn.getAttribute('data-id'))));
 }
+// Historia: pokaż/ukryj
+listEl.querySelectorAll('button.hist-reveal').forEach(btn => {
+  btn.addEventListener('click', () => {
+    const id = btn.dataset.id, idx = btn.dataset.idx;
+    const input = listEl.querySelector(`input.hist[data-id="${id}"][data-idx="${idx}"]`);
+    if (!input) return;
+    if (input.type === 'password'){ input.type='text'; btn.textContent='Ukryj'; }
+    else { input.type='password'; btn.textContent='Pokaż'; }
+  });
+});
+// Historia: kopiuj
+listEl.querySelectorAll('button.hist-copy').forEach(btn => {
+  btn.addEventListener('click', async () => {
+    const id = btn.dataset.id, idx = btn.dataset.idx;
+    const input = listEl.querySelector(`input.hist[data-id="${id}"][data-idx="${idx}"]`);
+    try{ await navigator.clipboard.writeText(input.value||''); alert('Skopiowano stare hasło.'); }
+    catch{ alert('Nie udało się skopiować.'); }
+  });
+});
+// Historia: przywróć
+listEl.querySelectorAll('button.hist-restore').forEach(btn => {
+  btn.addEventListener('click', () => {
+    const id = btn.dataset.id, idx = Number(btn.dataset.idx);
+    const e = vault.entries.find(x => x.id === id); if (!e || !e.history || !e.history[idx]) return;
+    const pw = e.history[idx].password;
+    changePassword(id, pw); // przywrócenie też trafi obecne hasło do historii
+  });
+});
 
 function addEntry(){ ensureUnlocked(); const id = crypto.randomUUID ? crypto.randomUUID() : String(Date.now()+Math.random()); const now=nowIso();
   vault.entries.unshift({ id, title:'Nowy wpis', username:'', password:'', url:'', notes:'', createdAt: now, updatedAt: now, pwChangedAt: now });
@@ -440,6 +481,46 @@ function measureStrength(pw, ctx=[]){
   res.score=score; res.label=['Bardzo słabe','Słabe','OK','Dobre','Bardzo dobre'][score]; res.width=(score/4)*100; return res;
 }
 function updateMeter(barId,labelId,m){ const bar=document.getElementById(barId), lab=document.getElementById(labelId); if(!bar||!lab) return; bar.style.width=`${m.width}%`; lab.textContent=`${m.label}${m.tips&&m.tips.length?' · '+m.tips[0]:''}`; }
+// Render sekcji „Historia haseł” dla jednego wpisu
+function renderHistory(e){
+  if (!e.history || !e.history.length) return '';
+  return `<details class="pw-hist">
+    <summary>Ostatnie hasła (${e.history.length})</summary>
+    ${e.history.map((h, idx) => `
+      <div class="row tight">
+        <input type="password" class="hist" data-id="${e.id}" data-idx="${idx}" value="${escapeHtml(h.password)}" readonly>
+        <button type="button" class="secondary hist-reveal"  data-id="${e.id}" data-idx="${idx}">Pokaż</button>
+        <button type="button" class="secondary hist-copy"    data-id="${e.id}" data-idx="${idx}">Kopiuj</button>
+        <button type="button" class="ghost hist-restore"     data-id="${e.id}" data-idx="${idx}">Przywróć</button>
+        <span class="muted">${new Date(h.changedAt).toLocaleString()}</span>
+      </div>
+    `).join('')}
+  </details>`;
+}
+
+// Zmiana hasła z potwierdzeniem + historia
+function changePassword(id, newPw, opts={}){
+  ensureUnlocked();
+  const e = vault.entries.find(x => x.id === id); if(!e) return;
+  const old = e.password || '';
+  if (old === newPw) return;
+
+  if (settings.protectPwChange && opts.confirm !== false){
+    const t = e.title || '(bez tytułu)';
+    if (!confirm(`Zamienić hasło w „${t}”? Poprzednie trafi do historii.`)) return;
+  }
+
+  if (old){
+    e.history = e.history || [];
+    e.history.unshift({ password: old, changedAt: nowIso() });
+    e.history = e.history.slice(0, settings.historySize || 3);
+  }
+  e.password = newPw;
+  e.pwChangedAt = nowIso();
+  e.updatedAt = nowIso();
+  persistVault();
+  renderList();
+}
 
 // ================== Audyt ==================
 function runAudit(){
@@ -467,6 +548,49 @@ addEntryBtn?.addEventListener('click', addEntry);
 lockBtn?.addEventListener('click', lockApp);
 searchEl?.addEventListener('input', ()=>{ if(vault) renderList(); });
 runAuditBtn?.addEventListener('click', runAudit);
+
+// Delegacja klików dla przycisków w Historii haseł (działa po każdym renderze)
+listEl?.addEventListener('click', async (e) => {
+  const btnReveal  = e.target.closest('button.hist-reveal');
+  const btnCopy    = e.target.closest('button.hist-copy');
+  const btnRestore = e.target.closest('button.hist-restore');
+  if (!btnReveal && !btnCopy && !btnRestore) return;
+
+  e.preventDefault(); // nic nie propaguj dalej (szczególnie w <details>)
+  const btn = btnReveal || btnCopy || btnRestore;
+  const id  = btn.dataset.id;
+  const idx = btn.dataset.idx;
+  const input = listEl.querySelector(`input.hist[data-id="${id}"][data-idx="${idx}"]`);
+  if (!input) return;
+
+  if (btnReveal){
+    if (input.type === 'password'){ input.type = 'text';  btn.textContent = 'Ukryj'; }
+    else                          { input.type = 'password'; btn.textContent = 'Pokaż'; }
+    return;
+  }
+
+  if (btnCopy){
+    try{
+      await navigator.clipboard.writeText(input.value || '');
+      alert('Skopiowano stare hasło.');
+    }catch{
+      const ta = document.createElement('textarea');
+      ta.value = input.value || ''; document.body.appendChild(ta);
+      ta.select();
+      try{ document.execCommand('copy'); alert('Skopiowano stare hasło.'); }
+      catch{ alert('Nie udało się skopiować.'); }
+      document.body.removeChild(ta);
+    }
+    return;
+  }
+
+  if (btnRestore){
+    const eTitle = (vault.entries.find(x=>x.id===id)?.title) || '(bez tytułu)';
+    if (!confirm(`Przywrócić to hasło w „${eTitle}”? Obecne trafi do historii.`)) return;
+    changePassword(id, input.value, { confirm: false }); // changePassword sam dopisze historię
+    return;
+  }
+});
 
 // ================== Export / Import ==================
 exportBtn?.addEventListener('click', () => {
@@ -603,11 +727,24 @@ function hideMask(){
   document.documentElement.classList.remove('masked');
 }
 
-// wyzwalacze – dokładamy pagehide (iOS) i nie używamy żadnych opóźnień
-document.addEventListener('visibilitychange', () => { if (document.hidden) showMask(); else hideMask(); });
-window.addEventListener('pagehide', showMask); // iOS lubi to zdarzenie przy wyjściu
-window.addEventListener('blur', showMask);
-window.addEventListener('focus', hideMask);
+// ——— ZDJĘCIE MASKI po powrocie ———
+function onShow(){ hideMask(); }
+function onHide(){ showMask(); }
+
+// iOS PWA lub przełączanie kart: ustaw/ściągnij maskę pewnie
+document.addEventListener('visibilitychange', ()=> { if (document.hidden) onHide(); else onShow(); });
+window.addEventListener('pagehide', onHide);   // gdy strona idzie w tło
+window.addEventListener('blur', onHide);
+window.addEventListener('focus', onShow);
+window.addEventListener('pageshow', onShow);   // gdy wraca do przodu
+
+// Ekran blokady: każda interakcja też zdejmuje maskę (na wszelki wypadek)
+['pointerdown','touchstart','click','keydown','focusin'].forEach(ev => {
+  lockView?.addEventListener(ev, onShow, { passive:true });
+});
+
+// Klik Face ID: zdejmij maskę i „obudź” aktywność
+bioUnlockBtn?.addEventListener('click', onShow, { capture:true });
 
 // ================== Init ==================
 applyTheme();
