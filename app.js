@@ -733,18 +733,52 @@ lockSnackFace?.addEventListener('click', ()=>{ hideLockSnack(); quickUnlock(); }
 lockSnackClose?.addEventListener('click', ()=> hideLockSnack());
 
 // ================== Maska ekranów ==================
-function showMask(){ if (settings.maskEnabled){ privacyMask?.removeAttribute('hidden'); document.documentElement.classList.add('masked'); } }
-function hideMask(){ privacyMask?.setAttribute('hidden',''); document.documentElement.classList.remove('masked'); }
+function isStandalone(){
+  return (window.matchMedia && window.matchMedia('(display-mode: standalone)').matches)
+         || (navigator.standalone === true);
+}
 
-function onShow(){ hideMask(); }
-function onHide(){ showMask(); }
-document.addEventListener('visibilitychange', ()=> { if (document.hidden) onHide(); else onShow(); });
-window.addEventListener('pagehide', onHide);
-window.addEventListener('blur', onHide);
-window.addEventListener('focus', onShow);
-window.addEventListener('pageshow', onShow);
-['pointerdown','touchstart','click','keydown','focusin'].forEach(ev => { lockView?.addEventListener(ev, onShow, { passive:true }); });
-bioUnlockBtn?.addEventListener('click', onShow, { capture:true });
+function shouldMask(){
+  // wyłączone w ustawieniach → nie maskujemy
+  if (!settings.maskEnabled) return false;
+  // na ekranie blokady nie maskujemy (inaczej przykrywa pole hasła)
+  if (document.body.classList.contains('locked')) return false;
+  // jeśli fokus jest na polu edycyjnym, nie maskujemy (klawiatura/AutoFill na iOS potrafi wywołać blur okna)
+  const ae = document.activeElement;
+  const tag = ae && ae.tagName;
+  if (tag === 'INPUT' || tag === 'TEXTAREA') return false;
+  return true;
+}
+
+function showMask(){
+  if (!shouldMask()) return;
+  privacyMask?.removeAttribute('hidden');
+  document.documentElement.classList.add('masked');
+}
+function hideMask(){
+  privacyMask?.setAttribute('hidden','');
+  document.documentElement.classList.remove('masked');
+}
+
+// reagujemy na realne przejście w tło / powrót
+document.addEventListener('visibilitychange', () => {
+  if (document.hidden) showMask(); else hideMask();
+});
+
+// w PWA (standalone) ignorujemy 'blur/pagehide' (iOS potrafi je wywołać przy klawiaturze)
+if (!isStandalone()){
+  window.addEventListener('pagehide', showMask);
+  window.addEventListener('blur', showMask);
+}
+
+// normalne „powroty” do aplikacji
+window.addEventListener('focus', hideMask);
+window.addEventListener('pageshow', hideMask);
+
+// każda interakcja na ekranie blokady upewnia się, że maska zniknie
+['pointerdown','touchstart','click','keydown','focusin'].forEach(ev => {
+  lockView?.addEventListener(ev, hideMask, { passive:true });
+});
 
 // ================== Init ==================
 applyTheme();

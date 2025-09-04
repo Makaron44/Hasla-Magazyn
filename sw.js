@@ -1,10 +1,10 @@
 // very simple cache-first service worker
-const CACHE = 'vault-pwa-v29';
+const CACHE = 'vault-pwa-v30';
 const ASSETS = [
   './',
-  './index.html?v=28',
-  './styles.css?v=28',
-  './app.js?v=28',
+  './index.html?v=30',
+  './styles.css?v=30',
+  './app.js?v=30',
   './manifest.webmanifest',
   './icon-192.png',
   './icon-512.png',
