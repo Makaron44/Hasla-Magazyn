@@ -1,189 +1,194 @@
 <!doctype html>
 <html lang="pl">
 <head>
-  <meta charset="utf-8" />
-  <meta name="viewport" content="width=device-width, initial-scale=1" />
-  <title>Lokalny Magazyn Haseł (PWA)</title>
-  <meta name="theme-color" content="#222222" />
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <meta name="theme-color" content="#f6f7fb">
+  <title>Sejf Haseł (Lokalny)</title>
   <link rel="manifest" href="./manifest.webmanifest">
-<link rel="icon" type="image/png" sizes="32x32" href="./favicon-32.png">
-<link rel="icon" type="image/png" sizes="16x16" href="./favicon-16.png">
-<link rel="apple-touch-icon" href="./apple-touch-icon.png">
-  <link rel="stylesheet" href="./styles.css?v=24">
+  <link rel="icon" type="image/png" sizes="32x32" href="./favicon-32.png">
+  <link rel="icon" type="image/png" sizes="16x16" href="./favicon-16.png">
+  <link rel="apple-touch-icon" href="./apple-touch-icon.png">
+  <link rel="stylesheet" href="./styles.css">
 </head>
-<body class="locked">
+<body>
   <div class="wrap">
-    <header class="card">
-      <h1>Lokalny Magazyn Haseł 🔐</h1>
-      <p class="muted">Dane są zaszyfrowane hasłem głównym (AES-GCM 256 + PBKDF2) i zapisane wyłącznie lokalnie. Działa offline (PWA).</p>
+    <header class="card header">
+      <div class="title">🔐 Sejf Haseł</div>
+      <div class="actions">
+        <button id="themeToggle" class="icon" title="Przełącz motyw">🌙</button>
+      </div>
     </header>
 
-    <!-- Zakładki (bez sticky; przewijane w poziomie na mobile) -->
     <nav id="tabs" class="tabs">
-  <!-- pasek zakładek: ukryty na mobile -->
-  <div class="bar hide-mobile">
-    <button data-tab="vault" class="active">Wpisy</button>
-    <button data-tab="generator">Generator</button>
-    <button data-tab="audit">Audyt</button>
-    <button data-tab="backup">Kopia</button>
-    <button data-tab="settings">⚙️ Ustawienia</button>
-  </div>
+      <div class="bar hide-mobile">
+        <button data-tab="vault" class="active">Wpisy</button>
+        <button data-tab="generator">Generator</button>
+        <button data-tab="audit">Audyt</button>
+        <button data-tab="backup">Kopia</button>
+        <button data-tab="settings">⚙️ Ustawienia</button>
+      </div>
+      <button id="menuBtn" class="hamburger show-mobile" aria-haspopup="true" aria-expanded="false" aria-controls="menuPanel">☰</button>
+    </nav>
 
-  <!-- hamburger: widoczny tylko na mobile -->
-  <button id="menuBtn" class="hamburger show-mobile" aria-haspopup="true" aria-expanded="false" aria-controls="menuPanel">☰</button>
-</nav>
-
-<!-- wysuwane menu mobilne -->
-<div id="menuPanel" class="menu-panel" hidden>
-  <div id="menuBackdrop" class="menu-backdrop"></div>
-  <div class="menu-sheet" role="dialog" aria-modal="true" aria-labelledby="menuTitle">
-    <div class="menu-header">
-      <strong id="menuTitle">Menu</strong>
-      <button id="menuClose" class="menu-close">✕</button>
+    <!-- wysuwane menu mobilne -->
+    <div id="menuPanel" class="menu-panel" hidden>
+      <div id="menuBackdrop" class="menu-backdrop"></div>
+      <div class="menu-sheet" role="dialog" aria-modal="true" aria-labelledby="menuTitle">
+        <div class="menu-header">
+          <strong id="menuTitle">Menu</strong>
+          <button id="menuClose" class="menu-close">✕</button>
+        </div>
+        <div class="menu-items">
+          <button data-tab="vault">📁 Wpisy</button>
+          <button data-tab="generator">🎲 Generator</button>
+          <button data-tab="audit">🧪 Audyt</button>
+          <button data-tab="backup">🗄️ Kopia</button>
+          <button data-tab="settings">⚙️ Ustawienia</button>
+        </div>
+      </div>
     </div>
-    <div class="menu-items">
-      <button data-tab="vault">📁 Wpisy</button>
-      <button data-tab="generator">🎲 Generator</button>
-      <button data-tab="audit">🧪 Audyt</button>
-      <button data-tab="backup">🗄️ Kopia</button>
-      <button data-tab="settings">⚙️ Ustawienia</button>
-    </div>
-  </div>
-</div>
 
-    <!-- BLOKADA / SETUP -->
+    <!-- LOCK VIEW -->
     <section id="lockView" class="card">
       <h2 id="lockTitle">Odblokuj sejf</h2>
+      <p id="lockInfo" class="muted">Podaj hasło główne, aby odszyfrować sejf.</p>
+      <label>Hasło główne
+        <input id="masterInput" type="password" autocomplete="current-password" inputmode="text" />
+      </label>
+      <label id="confirmLabel" hidden>Powtórz hasło
+        <input id="masterConfirm" type="password" autocomplete="new-password" inputmode="text" />
+      </label>
       <div class="row">
-        <label>Hasło główne
-          <input id="masterInput" type="password" autocomplete="current-password" />
-        </label>
-        <label id="confirmLabel" hidden>Potwierdź hasło
-          <input id="masterConfirm" type="password" autocomplete="new-password" />
-        </label>
         <button id="unlockBtn">Dalej</button>
-<button id="bioUnlock" class="secondary" hidden>Face ID</button>
-<p id="bioHint" class="muted"></p>
+        <button id="bioUnlock" class="secondary" hidden>Face ID</button>
       </div>
-      <p id="lockInfo" class="muted"></p>
-      <p class="muted">Uwaga: <strong>nie da się odzyskać</strong> sejfu bez hasła głównego. Rób eksport zaszyfrowany jako kopię zapasową.</p>
+      <p id="bioHint" class="muted"></p>
+      <button id="bioFix" class="ghost" hidden>Odśwież Face ID</button>
     </section>
 
-    <!-- WPISY -->
-    <section id="vaultView" class="view card">
-      <div class="row">
-        <div class="input-wrap grow">
-          <input id="search" type="text" placeholder="Szukaj po tytule, loginie lub adresie…">
-          <button id="themeToggle" class="icon-btn" title="Przełącz motyw">🌙</button>
+    <!-- VAULT VIEW -->
+    <section id="vaultView" class="card" style="display:none">
+      <div class="row between">
+        <div class="searchbar">
+          <input id="search" type="search" placeholder="Szukaj po tytule, loginie, URL…" autocomplete="off">
         </div>
-        <button id="addEntryBtn" class="secondary">+ Dodaj wpis</button>
-        <button id="lockBtn" class="ghost">Zablokuj</button>
+        <div class="row gap">
+          <button id="addEntryBtn">+ Nowy wpis</button>
+          <button id="lockBtn" class="secondary">Zablokuj</button>
+        </div>
       </div>
-
-      <div id="filtersBar" class="filters row"></div>
-
-      <div class="divider"></div>
+      <div id="filtersBar" class="filters"></div>
+      <p id="emptyInfo" class="muted" hidden>Brak wpisów. Dodaj pierwszy.</p>
       <div id="list" class="list"></div>
-      <p id="emptyInfo" class="muted" hidden>Brak wpisów. Dodaj pierwszy powyżej.</p>
     </section>
 
     <!-- GENERATOR -->
-    <section id="generatorView" class="view card">
+    <section id="generatorView" class="card" style="display:none">
       <h3>Generator hasła</h3>
-      <div class="row">
-        <label>Długość <input id="genLen" type="number" min="6" max="128" value="16" class="w-80"></label>
-        <label class="row tight">
-          <label class="row tight"><input id="genLower" type="checkbox" checked> małe</label>
-          <label class="row tight"><input id="genUpper" type="checkbox" checked> DUŻE</label>
-          <label class="row tight"><input id="genDigits" type="checkbox" checked> cyfry</label>
-          <label class="row tight"><input id="genSymbols" type="checkbox"> symbole</label>
-        </label>
-        <button id="genBtn">Wygeneruj</button>
+      <div class="grid-2">
+        <label>Długość <input id="genLen" type="number" min="6" max="128" value="16"></label>
+        <div class="row wrap">
+          <label><input id="genLower" type="checkbox" checked> małe</label>
+          <label><input id="genUpper" type="checkbox" checked> WIELKIE</label>
+          <label><input id="genDigits" type="checkbox" checked> 123</label>
+          <label><input id="genSymbols" type="checkbox"> !@#</label>
+        </div>
       </div>
       <div class="row">
-        <input id="genOut" class="genOut" type="text" readonly>
-        <button id="genCopy" class="secondary">Kopiuj</button><span id="genCopied" class="copy-ok" hidden>Skopiowano ✓</span>
+        <button id="genBtn">Generuj</button>
+        <button id="genCopy" class="secondary">Kopiuj</button>
+        <span id="genCopied" class="muted" hidden>Skopiowano ✓</span>
       </div>
-      <div class="meter m-top">
+      <input id="genOut" type="text" readonly>
+      <div class="meter">
         <div class="bar"><span id="genMeterBar"></span></div>
         <div class="label" id="genMeterLabel"></div>
       </div>
     </section>
 
     <!-- AUDYT -->
-    <section id="auditView" class="view card">
+    <section id="auditView" class="card" style="display:none">
       <div class="row">
         <button id="runAuditBtn">Uruchom audyt</button>
-        <span class="muted">Powtórki, krótkie, słabe hasła + stare wg progu w Ustawieniach.</span>
       </div>
-      <div class="divider"></div>
-      <div id="auditResults" class="audit-list"></div>
+      <div id="auditResults" class="audit"></div>
     </section>
 
-    <!-- KOPIA -->
-    <section id="backupView" class="view card">
-      <h3>Eksport / Import (szyfrowane)</h3>
-      <div class="row file-row">
-        <button id="exportBtn">Eksportuj .json</button>
-        <input id="importFile" type="file" accept=".json" hidden />
+    <!-- BACKUP -->
+    <section id="backupView" class="card" style="display:none">
+      <h3>Kopia zapasowa</h3>
+      <div class="row">
+        <button id="exportBtn">Eksportuj zaszyfrowaną kopię</button>
+      </div>
+      <div class="row">
+        <input id="importFile" type="file" accept="application/json" hidden>
         <button id="chooseFileBtn" class="secondary">Wybierz plik</button>
-        <span id="fileName" class="muted ellipsis">Brak pliku</span>
-        <button id="importBtn" class="secondary">Importuj</button>
+        <span id="fileName" class="muted">Brak pliku</span>
+        <button id="importBtn">Importuj</button>
       </div>
-      <p class="muted">Eksport zawiera tylko zaszyfrowaną zawartość + metadane (sól, iteracje). Nigdy nie zapisujemy haseł w postaci jawnej.</p>
-      <div class="divider"></div>
-      <p class="muted">Tip: po imporcie sejf zostanie zablokowany – odblokuj hasłem z importu.</p>
     </section>
 
-    <!-- USTAWIENIA -->
-    <section id="settingsView" class="view card">
+    <!-- SETTINGS -->
+    <section id="settingsView" class="card" style="display:none">
       <h3>Ustawienia</h3>
+      <div class="grid-2">
+        <label>Autoblokada (minuty)
+          <input id="setAutolock" type="number" min="1" max="120" value="5">
+        </label>
+        <label>Audyt: wiek hasła (dni)
+          <input id="setAgeDays" type="number" min="1" max="3650" value="180">
+        </label>
+      </div>
+
       <div class="stack">
-        <label class="row">
-          <span class="grow">Autoblokada po (minuty)</span>
-          <select id="setAutolock">
-            <option>1</option><option>3</option><option selected>5</option>
-            <option>10</option><option>15</option><option>30</option><option>60</option>
-          </select>
-        </label>
-
-        <label class="row">
-          <span class="grow">Audyt wieku hasła – ostrzegaj po (dni)</span>
-          <input id="setAgeDays" type="number" min="1" max="3650" value="180" class="w-80">
-        </label>
-
-        <div class="stack">
-          <div class="muted">Filtry dostępne na liście</div>
-          <div class="row">
-            <label class="row tight"><input id="fOld" type="checkbox" checked> Stare</label>
-            <label class="row tight"><input id="fShort" type="checkbox" checked> Krótkie</label>
-            <label class="row tight"><input id="fWeak" type="checkbox" checked> Słabe</label>
-            <label class="row tight"><input id="fDup" type="checkbox" checked> Powtórzone</label>
-          </div>
+        <div class="muted">Filtry w zakładce Wpisy</div>
+        <div class="row wrap gap">
+          <label><input id="fOld" type="checkbox" checked> Stare</label>
+          <label><input id="fShort" type="checkbox" checked> Krótkie</label>
+          <label><input id="fWeak" type="checkbox" checked> Słabe</label>
+          <label><input id="fDup" type="checkbox" checked> Powtórzone</label>
         </div>
+      </div>
 
-        <div class="row">
-<div class="stack">
-  <div class="muted">Szybkie odblokowanie (Face ID / Touch ID)</div>
-  <div class="row">
-    <button id="passkeySetup">Włącz / skonfiguruj</button>
-    <button id="passkeyRemove" class="ghost">Wyłącz</button>
-    <span id="passkeyState" class="muted"></span>
-  </div>
-</div>
+      <label class="row">
+        <span class="grow">Maska ekranów (gdy w tle)</span>
+        <input id="setMask" type="checkbox" checked>
+      </label>
 
-<label class="row">
-  <span class="grow">Maska ekranów (gdy w tle)</span>
-  <input id="setMask" type="checkbox" checked>
-</label>
-          <button id="saveSettings">Zapisz</button>
-          <span id="savedInfo" class="muted" hidden>Zapisano ✓</span>
+      <div class="stack">
+        <div class="muted">Szybkie odblokowanie (Face ID / Touch ID)</div>
+        <div class="row wrap gap">
+          <button id="passkeySetup">Włącz / skonfiguruj</button>
+          <button id="passkeyRemove" class="ghost">Wyłącz</button>
+          <button id="passkeyRefresh" class="ghost">Odśwież Face ID</button>
+          <span id="passkeyState" class="muted"></span>
         </div>
+      </div>
+
+      <div class="row">
+        <button id="saveSettings">Zapisz ustawienia</button>
+        <span id="savedInfo" class="muted" hidden>Zapisano ✓</span>
       </div>
     </section>
   </div>
 
-  <script src="./app.js?v=24" defer></script>
-<div id="privacyMask" class="privacy-mask" hidden></div>
+  <!-- Snack: cofnięcie zmiany hasła -->
+  <div id="snackbar" class="snackbar" hidden>
+    <span id="snackText">Hasło zmienione.</span>
+    <button id="snackUndo" class="ghost" type="button">Cofnij</button>
+  </div>
+
+  <!-- Snack po auto-blokadzie -->
+  <div id="lockSnack" class="snackbar" hidden>
+    <span>Zablokowano po bezczynności.</span>
+    <button id="lockSnackFace" type="button">Odblokuj Face ID</button>
+    <button id="lockSnackClose" type="button" class="ghost">Zamknij</button>
+  </div>
+
+  <!-- Maska prywatności -->
+  <div id="privacyMask" class="privacy-mask" hidden></div>
+
+  <script src="./app.js"></script>
 </body>
 </html>

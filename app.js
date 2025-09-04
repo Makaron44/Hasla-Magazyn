@@ -5,10 +5,10 @@ const SETTINGS_KEY = 'vault_settings_v1';
 const THEME_KEY = 'vault_theme';
 
 // Szybkie odblokowanie (FaceID/TouchID)
-const QUICK_BLOB_KEY = 'vault_quick_blob_v1';      // zaszyfrowana kopia sejfu kluczem z passkey
-const PASSKEY_ID_KEY = 'vault_passkey_id_v1';      // id poświadczenia (rawId b64url)
-const PASSKEY_USER_ID_KEY = 'vault_passkey_userid_v1'; // user.id (b64url) – czysto lokalnie
-const PASSKEY_SALT = new TextEncoder().encode('vault-quick-v1'); // sól do PRF/HKDF
+const QUICK_BLOB_KEY = 'vault_quick_blob_v1';
+const PASSKEY_ID_KEY = 'vault_passkey_id_v1';
+const PASSKEY_USER_ID_KEY = 'vault_passkey_userid_v1';
+const PASSKEY_SALT = new TextEncoder().encode('vault-quick-v1');
 
 const DEFAULT_ITER = 300_000;
 
@@ -63,14 +63,11 @@ async function decryptJson(payload, key){
   const pt = await crypto.subtle.decrypt({ name:'AES-GCM', iv }, key, ct);
   return JSON.parse(dec.decode(pt));
 }
-
-// HKDF z tajemnicy PRF -> klucz AES
 async function prfToAesKey(secretAB){
   const material = await crypto.subtle.importKey('raw', secretAB, 'HKDF', false, ['deriveKey']);
   return crypto.subtle.deriveKey(
     { name:'HKDF', hash:'SHA-256', salt: enc.encode('vault-hkdf-salt'), info: PASSKEY_SALT },
-    material,
-    { name:'AES-GCM', length:256 }, false, ['encrypt','decrypt']
+    material, { name:'AES-GCM', length:256 }, false, ['encrypt','decrypt']
   );
 }
 
@@ -88,7 +85,7 @@ const bumpActivity = () => { lastActivity = Date.now(); };
 setInterval(() => {
   if (!masterKey && !quickKey) return;
   const minutes = (Date.now() - lastActivity) / 60000;
-  if (minutes >= autolockMinutes) { lockApp(); alert('Auto-blokada po bezczynności.'); }
+  if (minutes >= autolockMinutes) { lockApp(); showLockSnack(); }
 }, 10_000);
 
 // ================== Elementy UI ==================
@@ -98,7 +95,7 @@ const lockView = $('#lockView'), vaultView = $('#vaultView'), generatorView = $(
 const lockTitle = $('#lockTitle'), lockInfo = $('#lockInfo'),
       masterInput = $('#masterInput'), masterConfirm = $('#masterConfirm'),
       confirmLabel = $('#confirmLabel'), unlockBtn = $('#unlockBtn'),
-      bioUnlockBtn = $('#bioUnlock'), bioHint = $('#bioHint');
+      bioUnlockBtn = $('#bioUnlock'), bioHint = $('#bioHint'), bioFixBtn = $('#bioFix');
 
 const listEl = $('#list'), searchEl = $('#search'), emptyInfo = $('#emptyInfo'),
       addEntryBtn = $('#addEntryBtn'), lockBtn = $('#lockBtn'), filtersBar = $('#filtersBar');
@@ -106,8 +103,7 @@ const listEl = $('#list'), searchEl = $('#search'), emptyInfo = $('#emptyInfo'),
 const genLen = $('#genLen'), genLower = $('#genLower'), genUpper = $('#genUpper'),
       genDigits = $('#genDigits'), genSymbols = $('#genSymbols'),
       genBtn = $('#genBtn'), genOut = $('#genOut'),
-      genCopy = $('#genCopy'), genCopied = $('#genCopied'),
-      genMeterBar = $('#genMeterBar'), genMeterLabel = $('#genMeterLabel');
+      genCopy = $('#genCopy'), genCopied = $('#genCopied');
 
 const runAuditBtn = $('#runAuditBtn'), auditResults = $('#auditResults');
 
@@ -122,15 +118,22 @@ const setAutolock = $('#setAutolock'), setAgeDays = $('#setAgeDays'),
       fOld = $('#fOld'), fShort = $('#fShort'), fWeak = $('#fWeak'), fDup = $('#fDup'),
       saveSettingsBtn = $('#saveSettings'), savedInfo = $('#savedInfo');
 const setMask = $('#setMask');
-const passkeySetupBtn = $('#passkeySetup'), passkeyRemoveBtn = $('#passkeyRemove'), passkeyState = $('#passkeyState');
+const passkeySetupBtn = $('#passkeySetup'), passkeyRemoveBtn = $('#passkeyRemove'),
+      passkeyState = $('#passkeyState'), passkeyRefreshBtn = $('#passkeyRefresh');
 
+// Snackbary
+const snack = $('#snackbar'); const snackText = $('#snackText'); const snackUndo = $('#snackUndo');
+let undoTimer = null; let lastUndo = null; let snackListeners = [];
+const lockSnack = $('#lockSnack'), lockSnackFace = $('#lockSnackFace'), lockSnackClose = $('#lockSnackClose');
+
+// Maska
 const privacyMask = $('#privacyMask');
 
 // ================== Widoki / Zakładki ==================
 const views = { vault: vaultView, generator: generatorView, audit: auditView, backup: backupView, settings: settingsView };
 const getTabButtons = () => document.querySelectorAll('#tabs [data-tab], #menuPanel [data-tab]');
 
-function showTab(name){
+function showTab(name){ try{ hideSnack(); }catch{}
   Object.values(views).forEach(v => { v.classList.remove('active'); v.style.display='none'; });
   if (views[name]) { views[name].classList.add('active'); views[name].style.display='block'; }
   getTabButtons().forEach(b => b.classList.toggle('active', b.dataset.tab === name));
@@ -142,7 +145,7 @@ const menuPanel    = document.getElementById('menuPanel');
 const menuBackdrop = document.getElementById('menuBackdrop');
 const menuClose    = document.getElementById('menuClose');
 
-function openMenu(){ if(!menuPanel) return; menuPanel.hidden=false; requestAnimationFrame(()=> menuPanel.classList.add('open')); menuBtn?.setAttribute('aria-expanded','true'); }
+function openMenu(){ if(!menuPanel) return; menuPanel.hidden=false; requestAnimationFrame(()=> menuPanel.classList.add('open')); menuBtn?.setAttribute('aria-expanded','true'); try{ hideSnack(); }catch{} }
 function closeMenu(){ if(!menuPanel) return; menuPanel.classList.remove('open'); setTimeout(()=> menuPanel.hidden=true,180); menuBtn?.setAttribute('aria-expanded','false'); }
 menuBtn?.addEventListener('click', ()=> menuPanel.hidden ? openMenu() : closeMenu());
 menuBackdrop?.addEventListener('click', closeMenu);
@@ -173,6 +176,19 @@ if (window.matchMedia){
 }
 
 // ================== Ustawienia – load/save ==================
+function rebuildFiltersBar(){
+  if (!filtersBar) return;
+  const items = [{key:'all', label:'Wszystkie'}];
+  if (settings.filters.old)   items.push({key:'old',   label:'Stare'});
+  if (settings.filters.short) items.push({key:'short', label:'Krótkie'});
+  if (settings.filters.weak)  items.push({key:'weak',  label:'Słabe'});
+  if (settings.filters.dup)   items.push({key:'dup',   label:'Powtórzone'});
+
+  filtersBar.innerHTML = items.map(i => `<button class="chip ${i.key===activeFilter?'active':''}" data-filter="${i.key}">${i.label}</button>`).join('');
+  filtersBar.querySelectorAll('button').forEach(btn => btn.addEventListener('click', () => {
+    activeFilter = btn.dataset.filter; rebuildFiltersBar(); if (vault) renderList();
+  }));
+}
 function loadSettings(){
   try{
     const s = JSON.parse(localStorage.getItem(SETTINGS_KEY) || 'null');
@@ -212,19 +228,25 @@ function checkSetup(){
   } else { showLock(false); }
   updateBioUI();
 }
+function cleanupOverlays(){
+  try{ hideMask(); }catch{}
+  try{ document.documentElement.classList.remove('masked'); }catch{}
+  try{ const mp=document.getElementById('menuPanel'); if(mp){ mp.hidden=true; mp.classList.remove('open'); } }catch{}
+  try{ hideLockSnack && hideLockSnack(); }catch{}
+}
 function showLock(isSetup){
-hideMask();
+  cleanupOverlays();
   document.body.classList.add('locked'); document.body.classList.remove('unlocked');
   lockView.style.display='block'; showTab('vault');
   confirmLabel.hidden = !isSetup;
   lockTitle.textContent = isSetup ? 'Ustaw hasło główne' : 'Odblokuj sejf';
   lockInfo.textContent = isSetup ? `Ustawiasz hasło główne. Iteracje PBKDF2: ${meta.iterations}.`
                                  : `Podaj hasło główne, aby odszyfrować sejf.`;
-  masterInput.value=''; masterConfirm.value=''; masterInput.focus();
+  masterInput.value=''; masterConfirm.value=''; setTimeout(()=>{ try{ masterInput?.focus(); }catch{} },120);
   [vaultView,generatorView,auditView,backupView,settingsView].forEach(v => v.style.display='none');
   updateBioUI();
 }
-function showMain(){
+function showMain(){ try{ hideSnack(); }catch{}
   document.body.classList.remove('locked'); document.body.classList.add('unlocked');
   lockView.style.display='none'; showTab('vault'); renderList(); searchEl.value='';
   bumpActivity(); hideMask();
@@ -275,19 +297,6 @@ async function persistVault(){
 
 // ================== Filtry – UI ==================
 let activeFilter = 'all';
-function rebuildFiltersBar(){
-  if (!filtersBar) return;
-  const items = [{key:'all', label:'Wszystkie'}];
-  if (settings.filters.old)   items.push({key:'old',   label:'Stare'});
-  if (settings.filters.short) items.push({key:'short', label:'Krótkie'});
-  if (settings.filters.weak)  items.push({key:'weak',  label:'Słabe'});
-  if (settings.filters.dup)   items.push({key:'dup',   label:'Powtórzone'});
-
-  filtersBar.innerHTML = items.map(i => `<button class="chip ${activeFilter===i.key?'active':''}" data-filter="${i.key}">${i.label}</button>`).join('');
-  filtersBar.querySelectorAll('button').forEach(btn => btn.addEventListener('click', () => {
-    activeFilter = btn.dataset.filter; rebuildFiltersBar(); if (vault) renderList();
-  }));
-}
 
 // ================== Lista / wpisy ==================
 function ensureUnlocked(){ if(!masterKey && !quickKey){ alert('Sejf jest zablokowany.'); throw new Error('locked'); } }
@@ -320,6 +329,44 @@ function filteredEntries(){
     (e.username||'').toLowerCase().includes(q) ||
     (e.url||'').toLowerCase().includes(q)
   );
+}
+
+function renderHistory(e){
+  if (!e.history || !e.history.length) return '';
+  return `<details class="pw-hist">
+    <summary>Ostatnie hasła (${e.history.length})</summary>
+    ${e.history.map((h, idx) => `
+      <div class="row tight">
+        <input type="password" class="hist" data-id="${e.id}" data-idx="${idx}" value="${escapeHtml(h.password)}" readonly>
+        <button type="button" class="secondary hist-reveal"  data-id="${e.id}" data-idx="${idx}">Pokaż</button>
+        <button type="button" class="secondary hist-copy"    data-id="${e.id}" data-idx="${idx}">Kopiuj</button>
+        <button type="button" class="ghost hist-restore"     data-id="${e.id}" data-idx="${idx}">Przywróć</button>
+        <span class="muted">${new Date(h.changedAt).toLocaleString()}</span>
+      </div>
+    `).join('')}
+  </details>`;
+}
+function changePassword(id, newPw, opts={}){
+  ensureUnlocked();
+  const e = vault.entries.find(x => x.id === id); if(!e) return;
+  const old = e.password || '';
+  if (old === newPw) return;
+
+  if (settings.protectPwChange && opts.confirm !== false){
+    const t = e.title || '(bez tytułu)';
+    if (!confirm(`Zamienić hasło w „${t}”? Poprzednie trafi do historii.`)) return;
+  }
+  if (old){
+    e.history = e.history || [];
+    e.history.unshift({ password: old, changedAt: nowIso() });
+    e.history = e.history.slice(0, settings.historySize || 3);
+  }
+  e.password = newPw;
+  e.pwChangedAt = nowIso();
+  e.updatedAt = nowIso();
+  persistVault();
+  renderList();
+  showSnack('Hasło zmienione', () => changePassword(id, old, { confirm:false }));
 }
 
 function renderList(){
@@ -361,10 +408,6 @@ function renderList(){
             <button class="secondary copy" data-id="${e.id}">Kopiuj</button>
             <span class="copy-ok" id="copied-${e.id}" hidden>Skopiowano ✓</span>
           </div>
-          <div class="meter">
-            <div class="bar"><span id="bar-${e.id}"></span></div>
-            <div class="label" id="label-${e.id}"></div>
-          </div>
         </label>
         <label>Adres (URL)
           <input type="url" placeholder="https://…" data-id="${e.id}" data-field="url" value="${escapeHtml(e.url)}" />
@@ -373,7 +416,7 @@ function renderList(){
           <textarea data-id="${e.id}" data-field="notes">${escapeHtml(e.notes)}</textarea>
         </label>
       </div>
-${renderHistory(e)}
+      ${renderHistory(e)}
       <div class="row">
         <button class="ghost genFor" data-id="${e.id}">Wygeneruj hasło dla tego wpisu</button>
         <span style="margin-left:auto"></span>
@@ -387,20 +430,18 @@ ${renderHistory(e)}
   listEl.querySelectorAll('input, textarea').forEach(el => {
     const field = el.getAttribute('data-field'); const id = el.getAttribute('data-id'); if (!field || !id) return;
     el.addEventListener('change', ev => {
-  const entry = vault.entries.find(x => x.id===id);
-  if (field === 'password'){
-    if (entry && entry.password !== ev.target.value){
-      changePassword(id, ev.target.value);
-    }
-  } else {
-    updateEntry(id, { [field]: ev.target.value });
-    renderList();
-  }
-});
-    if (field === 'password'){
-      el.addEventListener('input', ev => { const m = measureStrength(ev.target.value, entryContext(id)); updateMeter(`bar-${id}`, `label-${id}`, m); });
-      const m = measureStrength(el.value, entryContext(id)); updateMeter(`bar-${id}`, `label-${id}`, m);
-    }
+      const entry = vault.entries.find(x => x.id===id);
+      if (field === 'password'){
+        if (entry && entry.password !== ev.target.value){
+          changePassword(id, ev.target.value);
+        }
+      } else {
+        const patch = { [field]: ev.target.value };
+        entry && Object.assign(entry, patch);
+        updateEntry(id, patch);
+        renderList();
+      }
+    });
   });
 
   // akcje
@@ -412,42 +453,49 @@ ${renderHistory(e)}
     const id = btn.getAttribute('data-id'); const input = listEl.querySelector(`input[data-id="${id}"][data-field="password"]`);
     try{ await navigator.clipboard.writeText(input.value||''); const ok=$(`#copied-${id}`); ok.hidden=false; setTimeout(()=> ok.hidden=true,1500); } catch{ alert('Nie udało się skopiować.'); }
   }));
-  listEl.querySelectorAll('button.genFor').forEach(btn => {
-  btn.addEventListener('click', () => {
-    const id = btn.getAttribute('data-id');
-    const pass = generatePassword();
-    changePassword(id, pass);
-  });
-});
+  listEl.querySelectorAll('button.genFor').forEach(btn => btn.addEventListener('click', () => {
+    const id = btn.getAttribute('data-id'); const pass = generatePassword(); changePassword(id, pass);
+  }));
   listEl.querySelectorAll('button.del').forEach(btn => btn.addEventListener('click', () => deleteEntry(btn.getAttribute('data-id'))));
 }
-// Historia: pokaż/ukryj
-listEl.querySelectorAll('button.hist-reveal').forEach(btn => {
-  btn.addEventListener('click', () => {
-    const id = btn.dataset.id, idx = btn.dataset.idx;
-    const input = listEl.querySelector(`input.hist[data-id="${id}"][data-idx="${idx}"]`);
-    if (!input) return;
-    if (input.type === 'password'){ input.type='text'; btn.textContent='Ukryj'; }
-    else { input.type='password'; btn.textContent='Pokaż'; }
-  });
-});
-// Historia: kopiuj
-listEl.querySelectorAll('button.hist-copy').forEach(btn => {
-  btn.addEventListener('click', async () => {
-    const id = btn.dataset.id, idx = btn.dataset.idx;
-    const input = listEl.querySelector(`input.hist[data-id="${id}"][data-idx="${idx}"]`);
-    try{ await navigator.clipboard.writeText(input.value||''); alert('Skopiowano stare hasło.'); }
-    catch{ alert('Nie udało się skopiować.'); }
-  });
-});
-// Historia: przywróć
-listEl.querySelectorAll('button.hist-restore').forEach(btn => {
-  btn.addEventListener('click', () => {
-    const id = btn.dataset.id, idx = Number(btn.dataset.idx);
-    const e = vault.entries.find(x => x.id === id); if (!e || !e.history || !e.history[idx]) return;
-    const pw = e.history[idx].password;
-    changePassword(id, pw); // przywrócenie też trafi obecne hasło do historii
-  });
+
+// Delegacja klików dla Historii (zawsze działa po renderze)
+listEl?.addEventListener('focusin', ()=>{ try{ hideSnack(); }catch{} });
+listEl?.addEventListener('click', async (e) => {
+  const btnReveal  = e.target.closest('button.hist-reveal');
+  const btnCopy    = e.target.closest('button.hist-copy');
+  const btnRestore = e.target.closest('button.hist-restore');
+  if (!btnReveal && !btnCopy && !btnRestore) return;
+
+  e.preventDefault();
+  const btn = btnReveal || btnCopy || btnRestore;
+  const id  = btn.dataset.id;
+  const idx = btn.dataset.idx;
+  const input = listEl.querySelector(`input.hist[data-id="${id}"][data-idx="${idx}"]`);
+  if (!input) return;
+
+  if (btnReveal){
+    if (input.type === 'password'){ input.type = 'text';  btn.textContent = 'Ukryj'; }
+    else                          { input.type = 'password'; btn.textContent = 'Pokaż'; }
+    return;
+  }
+
+  if (btnCopy){
+    try{ await navigator.clipboard.writeText(input.value || ''); alert('Skopiowano stare hasło.'); }
+    catch{
+      const ta = document.createElement('textarea'); ta.value = input.value || ''; document.body.appendChild(ta); ta.select();
+      try{ document.execCommand('copy'); alert('Skopiowano stare hasło.'); } catch{ alert('Nie udało się skopiować.'); }
+      document.body.removeChild(ta);
+    }
+    return;
+  }
+
+  if (btnRestore){
+    const eTitle = (vault.entries.find(x=>x.id===id)?.title) || '(bez tytułu)';
+    if (!confirm(`Przywrócić to hasło w „${eTitle}”? Obecne trafi do historii.`)) return;
+    changePassword(id, input.value, { confirm: false });
+    return;
+  }
 });
 
 function addEntry(){ ensureUnlocked(); const id = crypto.randomUUID ? crypto.randomUUID() : String(Date.now()+Math.random()); const now=nowIso();
@@ -481,46 +529,6 @@ function measureStrength(pw, ctx=[]){
   res.score=score; res.label=['Bardzo słabe','Słabe','OK','Dobre','Bardzo dobre'][score]; res.width=(score/4)*100; return res;
 }
 function updateMeter(barId,labelId,m){ const bar=document.getElementById(barId), lab=document.getElementById(labelId); if(!bar||!lab) return; bar.style.width=`${m.width}%`; lab.textContent=`${m.label}${m.tips&&m.tips.length?' · '+m.tips[0]:''}`; }
-// Render sekcji „Historia haseł” dla jednego wpisu
-function renderHistory(e){
-  if (!e.history || !e.history.length) return '';
-  return `<details class="pw-hist">
-    <summary>Ostatnie hasła (${e.history.length})</summary>
-    ${e.history.map((h, idx) => `
-      <div class="row tight">
-        <input type="password" class="hist" data-id="${e.id}" data-idx="${idx}" value="${escapeHtml(h.password)}" readonly>
-        <button type="button" class="secondary hist-reveal"  data-id="${e.id}" data-idx="${idx}">Pokaż</button>
-        <button type="button" class="secondary hist-copy"    data-id="${e.id}" data-idx="${idx}">Kopiuj</button>
-        <button type="button" class="ghost hist-restore"     data-id="${e.id}" data-idx="${idx}">Przywróć</button>
-        <span class="muted">${new Date(h.changedAt).toLocaleString()}</span>
-      </div>
-    `).join('')}
-  </details>`;
-}
-
-// Zmiana hasła z potwierdzeniem + historia
-function changePassword(id, newPw, opts={}){
-  ensureUnlocked();
-  const e = vault.entries.find(x => x.id === id); if(!e) return;
-  const old = e.password || '';
-  if (old === newPw) return;
-
-  if (settings.protectPwChange && opts.confirm !== false){
-    const t = e.title || '(bez tytułu)';
-    if (!confirm(`Zamienić hasło w „${t}”? Poprzednie trafi do historii.`)) return;
-  }
-
-  if (old){
-    e.history = e.history || [];
-    e.history.unshift({ password: old, changedAt: nowIso() });
-    e.history = e.history.slice(0, settings.historySize || 3);
-  }
-  e.password = newPw;
-  e.pwChangedAt = nowIso();
-  e.updatedAt = nowIso();
-  persistVault();
-  renderList();
-}
 
 // ================== Audyt ==================
 function runAudit(){
@@ -537,7 +545,7 @@ function runAudit(){
   else{
     out.push(duplicates.length ? `<div class="audit-item bad"><strong>Powtórki haseł (${duplicates.length})</strong><ul>${duplicates.map(g=>`<li>${g.map(escapeHtml).join(' · ')}</li>`).join('')}</ul></div>` : `<div class="audit-item good"><strong>Brak powtórek haseł ✔</strong></div>`);
     out.push(tooShort.length ? `<div class="audit-item warn"><strong>Zbyt krótkie (&lt;12): ${tooShort.length}</strong><ul>${tooShort.map(t=>`<li>${escapeHtml(t)}</li>`).join('')}</ul></div>` : `<div class="audit-item good"><strong>Brak zbyt krótkich ✔</strong></div>`);
-    out.push(oldOnes.length ? `<div class="audit-item warn"><strong>Stare hasła &gt; ${settings.ageDays} dni: ${oldOnes.length}</strong><ul>${oldOnes.map(o=>`<li>${escapeHtml(o.title)} <span class="muted">(${o.days} dni)</span></li>`).join('')}</ul></div>` : `<div class="audit-item good"><strong>Brak starych haseł ✔</strong></div>`);
+    out.push(oldOnes.length ? `<div class="audit-item warn"><strong>Stare hasła &gt; ${settings.ageDays} dni: ${oldOnes.length}</strong><ul>${oldOnes.map(o=>`<li>${escapeHtml(o.title)} <span class="muted">(${o.days} dni)</span></li>`).join('')}</ul></div>` : `<div class="audit-item good"><strong>Brak starych ✔</strong></div>`);
     out.push(weakOnes.length ? `<div class="audit-item warn"><strong>Słabe wg miernika: ${weakOnes.length}</strong><ul>${weakOnes.map(w=>`<li>${escapeHtml(w.title)} <span class="muted">(${escapeHtml(w.note)})</span></li>`).join('')}</ul></div>` : `<div class="audit-item good"><strong>Brak słabych ✔</strong></div>`);
   }
   auditResults.innerHTML=out.join('');
@@ -548,49 +556,6 @@ addEntryBtn?.addEventListener('click', addEntry);
 lockBtn?.addEventListener('click', lockApp);
 searchEl?.addEventListener('input', ()=>{ if(vault) renderList(); });
 runAuditBtn?.addEventListener('click', runAudit);
-
-// Delegacja klików dla przycisków w Historii haseł (działa po każdym renderze)
-listEl?.addEventListener('click', async (e) => {
-  const btnReveal  = e.target.closest('button.hist-reveal');
-  const btnCopy    = e.target.closest('button.hist-copy');
-  const btnRestore = e.target.closest('button.hist-restore');
-  if (!btnReveal && !btnCopy && !btnRestore) return;
-
-  e.preventDefault(); // nic nie propaguj dalej (szczególnie w <details>)
-  const btn = btnReveal || btnCopy || btnRestore;
-  const id  = btn.dataset.id;
-  const idx = btn.dataset.idx;
-  const input = listEl.querySelector(`input.hist[data-id="${id}"][data-idx="${idx}"]`);
-  if (!input) return;
-
-  if (btnReveal){
-    if (input.type === 'password'){ input.type = 'text';  btn.textContent = 'Ukryj'; }
-    else                          { input.type = 'password'; btn.textContent = 'Pokaż'; }
-    return;
-  }
-
-  if (btnCopy){
-    try{
-      await navigator.clipboard.writeText(input.value || '');
-      alert('Skopiowano stare hasło.');
-    }catch{
-      const ta = document.createElement('textarea');
-      ta.value = input.value || ''; document.body.appendChild(ta);
-      ta.select();
-      try{ document.execCommand('copy'); alert('Skopiowano stare hasło.'); }
-      catch{ alert('Nie udało się skopiować.'); }
-      document.body.removeChild(ta);
-    }
-    return;
-  }
-
-  if (btnRestore){
-    const eTitle = (vault.entries.find(x=>x.id===id)?.title) || '(bez tytułu)';
-    if (!confirm(`Przywrócić to hasło w „${eTitle}”? Obecne trafi do historii.`)) return;
-    changePassword(id, input.value, { confirm: false }); // changePassword sam dopisze historię
-    return;
-  }
-});
 
 // ================== Export / Import ==================
 exportBtn?.addEventListener('click', () => {
@@ -626,8 +591,9 @@ function updatePasskeyState(){
 function updateBioUI(){
   const can = passkeyConfigured();
   if (bioUnlockBtn) bioUnlockBtn.hidden = !can;
+  if (bioFixBtn)    bioFixBtn.hidden    = !can;
   if (bioHint){
-    if (!can) bioHint.textContent = 'Tip: włącz Face ID w Ustawieniach, aby odblokowywać bez hasła.';
+    if (!can) bioHint.textContent = 'Tip: włącz Face ID w Ustawieniach (Safari + HTTPS), aby odblokowywać bez hasła.';
     else bioHint.textContent = 'Możesz użyć Face ID, aby szybko odblokować.';
   }
 }
@@ -645,20 +611,16 @@ async function passkeyRegister(){
     pubKeyCredParams: [{ type:'public-key', alg: -7 }, { type:'public-key', alg: -257 }],
     authenticatorSelection: { authenticatorAttachment:'platform', userVerification:'required', residentKey:'preferred' },
     timeout: 60_000,
-    extensions: { prf: { enable: true } } // prosimy o PRF
+    extensions: { prf: { enable: true } }
   };
   const cred = await navigator.credentials.create({ publicKey: pubKey });
   if (!cred) { alert('Nie udało się utworzyć poświadczenia.'); return; }
 
-  // zapisz identyfikatory lokalnie
   localStorage.setItem(PASSKEY_ID_KEY, b64url(cred.rawId));
   localStorage.setItem(PASSKEY_USER_ID_KEY, b64url(userId));
 
-  // pozyskaj tajemnicę PRF z get() i z niej wyprowadź klucz AES
   quickKey = await deriveDeviceKeyFromPasskey(cred.rawId);
-
-  // zapisz kopię sejfu szyfrowaną kluczem z Face ID
-  await persistVault();
+  await persistVault(); // zapis QUICK kopii
 
   alert('Face ID skonfigurowane. Od teraz możesz odblokowywać bez hasła.');
   updatePasskeyState();
@@ -709,41 +671,79 @@ async function passkeyRemove(){
   updatePasskeyState();
   alert('Wyłączono Face ID dla tego urządzenia.');
 }
-
-// UI biometrii
 passkeySetupBtn?.addEventListener('click', passkeyRegister);
 passkeyRemoveBtn?.addEventListener('click', passkeyRemove);
 bioUnlockBtn?.addEventListener('click', quickUnlock);
-
-// ================== Maska ekranów ==================
-function showMask(){
-  if (settings.maskEnabled){
-    privacyMask?.removeAttribute('hidden');
-    document.documentElement.classList.add('masked');
-  }
-}
-function hideMask(){
-  privacyMask?.setAttribute('hidden','');
-  document.documentElement.classList.remove('masked');
-}
-
-// ——— ZDJĘCIE MASKI po powrocie ———
-function onShow(){ hideMask(); }
-function onHide(){ showMask(); }
-
-// iOS PWA lub przełączanie kart: ustaw/ściągnij maskę pewnie
-document.addEventListener('visibilitychange', ()=> { if (document.hidden) onHide(); else onShow(); });
-window.addEventListener('pagehide', onHide);   // gdy strona idzie w tło
-window.addEventListener('blur', onHide);
-window.addEventListener('focus', onShow);
-window.addEventListener('pageshow', onShow);   // gdy wraca do przodu
-
-// Ekran blokady: każda interakcja też zdejmuje maskę (na wszelki wypadek)
-['pointerdown','touchstart','click','keydown','focusin'].forEach(ev => {
-  lockView?.addEventListener(ev, onShow, { passive:true });
+const bioFixBtnEl = document.getElementById('bioFix');
+bioFixBtnEl?.addEventListener('click', () => {
+  localStorage.removeItem(PASSKEY_ID_KEY);
+  localStorage.removeItem(PASSKEY_USER_ID_KEY);
+  localStorage.removeItem(QUICK_BLOB_KEY);
+  quickKey = null;
+  updatePasskeyState();
+  alert('Usunięto lokalną konfigurację Face ID.\nOdblokuj hasłem i włącz ponownie w Ustawieniach.');
+});
+passkeyRefreshBtn?.addEventListener('click', async () => {
+  if (!masterKey){ alert('Najpierw odblokuj sejf hasłem.'); return; }
+  await passkeyRegister();
 });
 
-// Klik Face ID: zdejmij maskę i „obudź” aktywność
+// ================== Snack bary ==================
+
+function addSnackOneTime(target, event, handler, opts){ 
+  const fn = (ev)=>{ try{ if (snack && snack.contains && snack.contains(ev?.target)) return; }catch{} 
+    target.removeEventListener(event, fn, opts||{capture:true}); handler(); };
+  target.addEventListener(event, fn, opts||{capture:true});
+  snackListeners.push(()=> target.removeEventListener(event, fn, opts||{capture:true}));
+}
+
+function showSnack(text, onUndo){
+  if (!snack) return;
+  snackText.textContent = text || '';
+  snack.hidden = false;
+  if (undoTimer) clearTimeout(undoTimer);
+  // remove old listeners
+  try{ snackListeners.forEach(fn=>fn()); snackListeners = []; }catch{}
+  lastUndo = onUndo || null;
+  // auto hide after 6s
+  undoTimer = setTimeout(() => { hideSnack(); }, 6000);
+  // dismiss on interactions
+  addSnackOneTime(window, 'scroll', hideSnack, {passive:true, capture:true});
+  addSnackOneTime(window, 'resize', hideSnack, {passive:true, capture:true});
+  addSnackOneTime(document, 'visibilitychange', hideSnack, {capture:true});
+  addSnackOneTime(document, 'pointerdown', (e)=>{ if (!snack.contains(e.target)) hideSnack(); }, {capture:true});
+}
+function hideSnack(){
+  if (!snack) return;
+  snack.hidden = true;
+  if (undoTimer) clearTimeout(undoTimer);
+  undoTimer = null;
+  lastUndo = null;
+  try{ snackListeners.forEach(fn=>fn()); snackListeners = []; }catch{}
+}
+snackUndo?.addEventListener('click', () => {
+  try{ window.addEventListener('scroll', hideSnack, { passive:true, once:true }); }catch{}
+
+  if (lastUndo) lastUndo();
+  hideSnack();
+});
+function showLockSnack(){ if (lockSnack) lockSnack.hidden = false; }
+function hideLockSnack(){ if (lockSnack) lockSnack.hidden = true; }
+lockSnackFace?.addEventListener('click', ()=>{ hideLockSnack(); quickUnlock(); });
+lockSnackClose?.addEventListener('click', ()=> hideLockSnack());
+
+// ================== Maska ekranów ==================
+function showMask(){ if (settings.maskEnabled){ privacyMask?.removeAttribute('hidden'); document.documentElement.classList.add('masked'); } }
+function hideMask(){ privacyMask?.setAttribute('hidden',''); document.documentElement.classList.remove('masked'); }
+
+function onShow(){ hideMask(); }
+function onHide(){ showMask(); }
+document.addEventListener('visibilitychange', ()=> { if (document.hidden) onHide(); else onShow(); });
+window.addEventListener('pagehide', onHide);
+window.addEventListener('blur', onHide);
+window.addEventListener('focus', onShow);
+window.addEventListener('pageshow', onShow);
+['pointerdown','touchstart','click','keydown','focusin'].forEach(ev => { lockView?.addEventListener(ev, onShow, { passive:true }); });
 bioUnlockBtn?.addEventListener('click', onShow, { capture:true });
 
 // ================== Init ==================
@@ -752,14 +752,13 @@ loadSettings();
 checkSetup();
 showTab('vault');
 
-// Wyzeruj poziomy scroll na starcie i przy resize (iOS czasem przesuwa)
 function resetScrollX(){ document.documentElement.scrollLeft = 0; document.body.scrollLeft = 0; }
 window.addEventListener('load', resetScrollX);
 window.addEventListener('resize', resetScrollX);
 
-// ================== PWA (opcjonalnie) ==================
+// ================== PWA ==================
 if ('serviceWorker' in navigator){
   window.addEventListener('load', () => {
-    navigator.serviceWorker.register('./sw.js').catch(()=>{ /* cicho */ });
+    navigator.serviceWorker.register('./sw.js').catch(()=>{});
   });
 }
